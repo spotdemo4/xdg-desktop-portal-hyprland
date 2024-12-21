@@ -58,6 +58,7 @@ pkg_check_modules(
   deps
   REQUIRED
   IMPORTED_TARGET
+  dbus-1
   wayland-client
   wayland-protocols>=1.39
   libpipewire-0.3>=1.1.82
@@ -93,12 +94,13 @@ if(NOT EXISTS
     "Workspace capture requires a hyprland-protocols revision containing this protocol.")
 endif()
 
+pkg_search_module(UUID REQUIRED uuid)
 file(GLOB_RECURSE SRCFILES CONFIGURE_DEPENDS "src/*.cpp")
 add_executable(xdg-desktop-portal-hyprland ${SRCFILES})
 target_include_directories(xdg-desktop-portal-hyprland PRIVATE "src/" "protocols/")
 target_link_libraries(
   xdg-desktop-portal-hyprland PRIVATE rt PkgConfig::SDBUS Threads::Threads
-                                      PkgConfig::deps)
+                                      PkgConfig::deps ${UUID_LIBRARIES})
 
 # protocols
 pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
@@ -137,6 +139,8 @@ protocolwayland()
 protocolnew("${CMAKE_SOURCE_DIR}/protocols"
             "wlr-foreign-toplevel-management-unstable-v1" true)
 protocolnew("${CMAKE_SOURCE_DIR}/protocols" "wlr-screencopy-unstable-v1" true)
+protocolnew("${CMAKE_SOURCE_DIR}/protocols" "wlr-virtual-pointer-unstable-v1" true)
+protocolnew("${CMAKE_SOURCE_DIR}/protocols" "virtual-keyboard-unstable-v1" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-global-shortcuts-v1"
             true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-toplevel-export-v1"
