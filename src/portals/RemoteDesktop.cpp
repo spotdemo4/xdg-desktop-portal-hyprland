@@ -90,6 +90,8 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
     PSESSION->session            = createDBusSession(sessionHandle);
     PSESSION->sessionHandle      = sessionHandle;
     PSESSION->session->onDestroy = [PSESSION, this]() {
+        if (g_pPortalManager->m_sPortals.screencopy)
+            g_pPortalManager->m_sPortals.screencopy->removeRemoteDesktopSession(PSESSION->sessionHandle);
         PSESSION->eis->stopServer();
         PSESSION->eis.reset();
         Debug::log(LOG, "[remotedesktop] Session {} destroyed", PSESSION->sessionHandle.c_str());
@@ -113,12 +115,21 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
     PSESSION->eis->setKeymap({.fd = keymap.fd, .size = keymap.size});
 
     m_mSessions.emplace(sessionHandle, PSESSION);
-    
+
+    // ScreenCast.SelectSources may be called with this session, to share the screen along with input
+    if (g_pPortalManager->m_sPortals.screencopy)
+        g_pPortalManager->m_sPortals.screencopy->addRemoteDesktopSession(requestHandle, sessionHandle, appID);
+
     return {0, {}};
 }
 
 dbUasv CRemoteDesktopPortal::onSelectDevices(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID,
                                              std::unordered_map<std::string, sdbus::Variant> opts) {
+    // what a restored session shared comes with its devices, and its sources are selected after
+    const auto PCAST = g_pPortalManager->m_sPortals.screencopy ? g_pPortalManager->m_sPortals.screencopy->getSession(sessionHandle) : nullptr;
+    if (const auto RESTORE = opts.find("restore_data"); PCAST && RESTORE != opts.end())
+        PCAST->restoreData = RESTORE->second;
+
     return {0, {}};
 }
 
@@ -127,12 +138,34 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
     Debug::log(LOG, "[remotedesktop] start request");
 
     std::unordered_map<std::string, sdbus::Variant> results;
-    results["devices"]   = sdbus::Variant{uint32_t{1 | 2}};
+
+    // share the screen, when sources were selected with this session
+    const auto PCAST = g_pPortalManager->m_sPortals.screencopy ? g_pPortalManager->m_sPortals.screencopy->getSession(sessionHandle) : nullptr;
+    if (PCAST && PCAST->sourcesSelected) {
+        auto [code, cast] = g_pPortalManager->m_sPortals.screencopy->onStart(requestHandle, sessionHandle, appID, parentWindow, opts);
+        if (code != 0)
+            return {code, {}};
+        results = cast;
+
+        const auto PSESSION = m_mSessions[sessionHandle];
+        const auto POUTPUT  = PCAST->selection.type == TYPE_OUTPUT ? g_pPortalManager->getOutputFromName(PCAST->selection.output) : nullptr;
+        if (PSESSION && POUTPUT && wl_proxy_get_version((wl_proxy*)m_sState.pointerMgr->resource()) >= 2) {
+            PSESSION->outputPointer = makeShared<CCZwlrVirtualPointerV1>(
+                m_sState.pointerMgr->sendCreateVirtualPointerWithOutput(g_pPortalManager->m_sWaylandConnection.seat->resource(), POUTPUT->output->resource()));
+            PSESSION->streamNode   = PCAST->sharingData.nodeID;
+            PSESSION->streamWidth  = PCAST->sharingData.frameInfoSHM.w;
+            PSESSION->streamHeight = PCAST->sharingData.frameInfoSHM.h;
+        }
+    }
+
+    results["devices"]           = sdbus::Variant{uint32_t{1 | 2}};
     results["clipboard_enabled"] = sdbus::Variant{bool(true)};
 
-    std::unordered_map<std::string, sdbus::Variant> restoreData;
-    results["restore_data"] = sdbus::Variant{sdbus::Struct<std::string, uint32_t, sdbus::Variant>{"hyprland", 1, sdbus::Variant{restoreData}}};
-    results["persist_mode"] = sdbus::Variant{uint32_t{2}};
+    if (!results.contains("restore_data")) {
+        std::unordered_map<std::string, sdbus::Variant> restoreData;
+        results["restore_data"] = sdbus::Variant{sdbus::Struct<std::string, uint32_t, sdbus::Variant>{"hyprland", 1, sdbus::Variant{restoreData}}};
+        results["persist_mode"] = sdbus::Variant{uint32_t{2}};
+    }
 
     return {0, results};
 }
@@ -145,6 +178,12 @@ dbUasv CRemoteDesktopPortal::onNotifyPointerMotion(sdbus::ObjectPath sessionHand
 
 dbUasv CRemoteDesktopPortal::onNotifyPointerMotionAbsolute(sdbus::ObjectPath sessionHandle, unsigned int stream, double x, double y, std::unordered_map<std::string, sdbus::Variant> opts) {
     const auto PSESSION = m_mSessions[sessionHandle];
+    // positions are in the stream's coordinates, which the output's pointer maps onto the output
+    if (PSESSION && PSESSION->outputPointer && stream == PSESSION->streamNode && PSESSION->streamWidth > 0 && PSESSION->streamHeight > 0) {
+        PSESSION->outputPointer->sendMotionAbsolute(0, x, y, PSESSION->streamWidth, PSESSION->streamHeight);
+        PSESSION->outputPointer->sendFrame();
+        return {0, {}};
+    }
     PSESSION->pointer->sendMotionAbsolute(0, x, y, 1920, 1080);
     return {0, {}};
 }

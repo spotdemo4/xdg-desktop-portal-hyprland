@@ -42,6 +42,9 @@ class CRemoteDesktopPortal {
         std::unique_ptr<SDBusSession>          session;
 
         SP<CCZwlrVirtualPointerV1>             pointer;
+        // a pointer bound to the shared output, which absolute positions in its stream map onto
+        SP<CCZwlrVirtualPointerV1>             outputPointer;
+        uint32_t                               streamNode = 0, streamWidth = 0, streamHeight = 0;
         SP<CCZwpVirtualKeyboardV1>             keyboard;
         std::unique_ptr<EmulatedInputServer>   eis;
     };

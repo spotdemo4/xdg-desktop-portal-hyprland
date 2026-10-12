@@ -11,6 +11,7 @@
 #include "../shared/Session.hpp"
 #include "../dbusDefines.hpp"
 #include <chrono>
+#include <optional>
 
 enum cursorModes {
     HIDDEN   = 1,
@@ -64,11 +65,18 @@ class CScreencopyPortal {
     dbUasv onStart(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID, std::string parentWindow,
                    std::unordered_map<std::string, sdbus::Variant> opts);
 
+    // screen casts in RemoteDesktop sessions, whose session objects the RemoteDesktop portal owns
+    void addRemoteDesktopSession(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID);
+    void removeRemoteDesktopSession(sdbus::ObjectPath sessionHandle);
+
     struct SSession {
         std::string                               appid;
         sdbus::ObjectPath                         requestHandle, sessionHandle;
         uint32_t                                  cursorMode  = HIDDEN;
         uint32_t                                  persistMode = 0;
+        bool                                      sourcesSelected = false;
+        // restore data a RemoteDesktop session was started with, which its sources restore from
+        std::optional<sdbus::Variant>             restoreData;
 
         std::unique_ptr<SDBusRequest>             request;
         std::unique_ptr<SDBusSession>             session;
@@ -111,6 +119,7 @@ class CScreencopyPortal {
         void onCloseSession(sdbus::MethodCall&);
     };
 
+    SSession*                            getSession(sdbus::ObjectPath& path);
     void                                 startFrameCopy(SSession* pSession);
     void                                 queueNextShareFrame(SSession* pSession);
     bool                                 hasToplevelCapabilities();
@@ -122,7 +131,6 @@ class CScreencopyPortal {
 
     std::vector<Hyprutils::Memory::CUniquePointer<SSession>> m_vSessions;
 
-    SSession*                                                getSession(sdbus::ObjectPath& path);
     void                                                     startSharing(SSession* pSession);
 
     struct {

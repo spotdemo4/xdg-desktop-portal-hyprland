@@ -83,10 +83,13 @@ dbUasv CScreencopyPortal::onSelectSources(sdbus::ObjectPath requestHandle, sdbus
     static auto* const* PCURSORMODE = (Hyprlang::INT* const*)g_pPortalManager->m_sConfig.config->getConfigValuePtr("screencopy:cursor_mode")->getDataStaticPtr();
 
     if (!PSESSION) {
+        // an error reply instead of a throw, which aborts the portal
         Debug::log(ERR, "[screencopy] SelectSources: no session found??");
-        throw sdbus::Error{sdbus::Error::Name{"NOSESSION"}, "No session found"};
-        return {1, {}};
+        return {2, {}};
     }
+
+    if (PSESSION->restoreData && !options.contains("restore_data"))
+        options["restore_data"] = *PSESSION->restoreData;
 
     if (**PCURSORMODE == HIDDEN || **PCURSORMODE == EMBEDDED) {
         PSESSION->cursorMode = **PCURSORMODE;
@@ -249,7 +252,8 @@ dbUasv CScreencopyPortal::onSelectSources(sdbus::ObjectPath requestHandle, sdbus
         }
     }
 
-    PSESSION->selection = SHAREDATA;
+    PSESSION->selection       = SHAREDATA;
+    PSESSION->sourcesSelected = SHAREDATA.type != TYPE_INVALID;
 
     return {SHAREDATA.type == TYPE_INVALID ? 1 : 0, {}};
 }
@@ -266,8 +270,7 @@ dbUasv CScreencopyPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Object
 
     if (!PSESSION) {
         Debug::log(ERR, "[screencopy] Start: no session found??");
-        throw sdbus::Error{sdbus::Error::Name{"NOSESSION"}, "No session found"};
-        return {1, {}};
+        return {2, {}};
     }
 
     startSharing(PSESSION);
@@ -295,7 +298,12 @@ dbUasv CScreencopyPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Object
     std::vector<sdbus::Struct<uint32_t, std::unordered_map<std::string, sdbus::Variant>>> streams;
 
     std::unordered_map<std::string, sdbus::Variant>                                       streamData;
-    streamData["position"]    = sdbus::Variant{sdbus::Struct<int32_t, int32_t>{0, 0}};
+    int32_t x = 0, y = 0;
+    if (const auto POUTPUT = PSESSION->selection.type == TYPE_OUTPUT ? g_pPortalManager->getOutputFromName(PSESSION->selection.output) : nullptr) {
+        x = POUTPUT->logicalPositionValid ? POUTPUT->logicalX : POUTPUT->x;
+        y = POUTPUT->logicalPositionValid ? POUTPUT->logicalY : POUTPUT->y;
+    }
+    streamData["position"]    = sdbus::Variant{sdbus::Struct<int32_t, int32_t>{x, y}};
     streamData["size"]        = sdbus::Variant{sdbus::Struct<int32_t, int32_t>{PSESSION->sharingData.frameInfoSHM.w, PSESSION->sharingData.frameInfoSHM.h}};
     streamData["source_type"] = sdbus::Variant{uint32_t{type}};
 
@@ -310,6 +318,30 @@ dbUasv CScreencopyPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Object
     options["streams"] = sdbus::Variant{streams};
 
     return {0, options};
+}
+
+void CScreencopyPortal::addRemoteDesktopSession(sdbus::ObjectPath requestHandle, sdbus::ObjectPath sessionHandle, std::string appID) {
+    g_pPortalManager->m_sHelpers.toplevel->activate();
+
+    Debug::log(LOG, "[screencopy] New remote desktop session {}", sessionHandle.c_str());
+
+    const Hyprutils::Memory::CWeakPointer<SSession> PSESSION = m_vSessions.emplace_back(Hyprutils::Memory::makeUnique<SSession>(appID, requestHandle, sessionHandle));
+    PSESSION->self                                           = PSESSION;
+}
+
+void CScreencopyPortal::removeRemoteDesktopSession(sdbus::ObjectPath sessionHandle) {
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION)
+        return;
+
+    if (PSESSION->sharingData.active) {
+        m_pPipewire->destroyStream(PSESSION);
+        PSESSION->sharingData.active = false;
+        Debug::log(LOG, "[screencopy] Stream destroyed");
+    }
+    Debug::log(LOG, "[screencopy] Remote desktop session {} destroyed", sessionHandle.c_str());
+
+    g_pPortalManager->m_sHelpers.toplevel->deactivate();
 }
 
 void CScreencopyPortal::startSharing(CScreencopyPortal::SSession* pSession) {
