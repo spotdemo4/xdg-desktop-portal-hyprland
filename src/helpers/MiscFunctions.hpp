@@ -8,3 +8,5 @@ bool        inShellPath(const std::string& exec);
 void        sendEmptyDbusMethodReply(sdbus::MethodCall& call, u_int32_t responseCode);
 int         allocateSHMFile(size_t len);
 bool        allocateSHMFilePair(size_t size, int* rw_fd_ptr, int* ro_fd_ptr);
+// milliseconds on the monotonic clock, which input events are timestamped with
+uint32_t    monotonicMs();

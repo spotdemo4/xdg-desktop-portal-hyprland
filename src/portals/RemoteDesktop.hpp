@@ -5,6 +5,7 @@
 #include "virtual-keyboard-unstable-v1.hpp"
 #include "../shared/Session.hpp"
 #include "../shared/Eis.hpp"
+#include "../shared/KeyboardState.hpp"
 #include "../dbusDefines.hpp"
 #include <libei-1.0/libeis.h>
 #include <queue>
@@ -46,12 +47,17 @@ class CRemoteDesktopPortal {
         SP<CCZwlrVirtualPointerV1>             outputPointer;
         uint32_t                               streamNode = 0, streamWidth = 0, streamHeight = 0;
         SP<CCZwpVirtualKeyboardV1>             keyboard;
+        // what the portal's own keyboard methods hold down, for their modifiers
+        KeyboardState                          keyboardState;
         std::unique_ptr<EmulatedInputServer>   eis;
     };
 
     std::unordered_map<std::string, std::shared_ptr<SSession>> m_mSessions;
 
   private:
+    std::shared_ptr<SSession>                                     getSession(const sdbus::ObjectPath& handle);
+    void                                                          sendModifiers(SSession& session);
+
     std::priority_queue<int, std::vector<int>, std::greater<int>> m_pqFreeIds;
 
     struct {
