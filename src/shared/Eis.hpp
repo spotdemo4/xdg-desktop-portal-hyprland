@@ -6,9 +6,10 @@
 #include "virtual-keyboard-unstable-v1.hpp"
 #include <memory>
 #include "../includes.hpp"
+#include "KeyboardState.hpp"
 
 struct Keymap {
-    int32_t  fd   = 0;
+    int32_t  fd   = -1;
     uint32_t size = 0;
 };
 
@@ -57,9 +58,7 @@ class EmulatedInputServer {
     SP<CCZwlrVirtualPointerV1> virtualPointer  = nullptr;
     SP<CCZwpVirtualKeyboardV1> virtualKeyboard = nullptr;
 
-    uint32_t                   depressed       = 0;
-    uint32_t                   latched         = 0;
-    uint32_t                   locked          = 0;
+    KeyboardState keyboardState;
 
     Keymap keymap;
 
@@ -70,4 +69,6 @@ class EmulatedInputServer {
     Keymap openKeymap();
     void   clearPointer();
     void   clearKeyboard();
+    void   sendVirtualModifiers();
+    void   releaseVirtualKeys();
 };

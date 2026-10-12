@@ -123,48 +123,18 @@ int EmulatedInputServer::onEvent(eis_event* e) {
             device = eis_event_get_device(e);
             Debug::log(LOG, "[EIS] Device {} will no longer send events", eis_device_get_name(device));
 
-            depressed = 0;
-            virtualKeyboard->sendModifiers(depressed, 0, locked, 3);
+            // Pointer idle/leave events must not reset the keyboard state.
+            if (device == client.keyboard)
+                releaseVirtualKeys();
             break;
         case EIS_EVENT_KEYBOARD_KEY:
             if (!virtualKeyboard) break;
             {
-                uint32_t keycode = eis_event_keyboard_get_key(e);
-                bool     pressed = eis_event_keyboard_get_key_is_press(e);
-                uint32_t modmask = 0u;
-                switch (keycode) {
-                    case KEY_LEFTSHIFT:
-                    case KEY_RIGHTSHIFT:
-                        modmask = 1u;
-                        break;
-                    case KEY_CAPSLOCK:
-                        if (pressed) locked ^= 1u << 1u;
-                        break;
-                    case KEY_LEFTCTRL:
-                    case KEY_RIGHTCTRL:
-                        modmask = 1u << 2u;
-                        break;
-                    case KEY_LEFTALT:
-                    case KEY_RIGHTALT:
-                        modmask = 1u << 3u;
-                        break;
-                    case KEY_NUMLOCK:
-                        if (pressed) locked ^= 1u << 4u;
-                        break;
-                    case KEY_LEFTMETA:
-                    case KEY_RIGHTMETA:
-                        modmask = 1u << 6u;
-                        break;
-                    case KEY_SCROLLLOCK:
-                        if (pressed) locked ^= 1u << 7u;
-                        break;
-                    default:
-                        break;
-                }
-
-                depressed = pressed ? depressed | modmask : depressed & (~modmask);
+                const uint32_t keycode = eis_event_keyboard_get_key(e);
+                const bool pressed = eis_event_keyboard_get_key_is_press(e);
+                keyboardState.key(keycode, pressed);
                 virtualKeyboard->sendKey(1, keycode, pressed);
-                virtualKeyboard->sendModifiers(depressed, 0, locked, 3);
+                sendVirtualModifiers();
             }
             break;
         case EIS_EVENT_FRAME:
@@ -261,9 +231,13 @@ void EmulatedInputServer::ensureKeyboard() {
     eis_device_configure_name(keyboard, "captured keyboard");
     eis_device_configure_capability(keyboard, EIS_DEVICE_CAP_KEYBOARD);
 
-    if (keymap.fd != 0) {
+    if (keymap.fd >= 0 && keymap.size > 0) {
         Keymap _keymap = openKeymap();
-        Debug::log(LOG, "Using keymap {}", _keymap.fd);
+        if (_keymap.fd < 0) {
+            eis_device_unref(keyboard);
+            return;
+        }
+        Debug::log(LOG, "Using compositor keymap for EIS keyboard");
         eis_keymap* eis_keymap = eis_device_new_keymap(keyboard, EIS_KEYMAP_TYPE_XKB, _keymap.fd, _keymap.size);
         eis_keymap_add(eis_keymap);
         eis_keymap_unref(eis_keymap);
@@ -287,6 +261,7 @@ Keymap EmulatedInputServer::openKeymap() {
 
     int keymapFD = allocateSHMFile(keymap.size);
     if (keymapFD < 0) {
+        munmap(src, keymap.size);
         Debug::log(ERR, "Failed to create a keymap file for keyboard grab");
         return _keymap;
     }
@@ -295,6 +270,7 @@ Keymap EmulatedInputServer::openKeymap() {
     if (dst == MAP_FAILED) {
         Debug::log(ERR, "Failed to mmap a keymap file for keyboard grab");
         close(keymapFD);
+        munmap(src, keymap.size);
         return _keymap;
     }
 
@@ -322,6 +298,7 @@ void EmulatedInputServer::clearKeyboard() {
     if (!client.keyboard)
         return;
     Debug::log(LOG, "[EIS] Clearing keyboard");
+    releaseVirtualKeys();
 
     eis_device_remove(client.keyboard);
     eis_device_unref(client.keyboard);
@@ -353,7 +330,46 @@ void EmulatedInputServer::stopEmulating() {
 }
 
 void EmulatedInputServer::setKeymap(Keymap _keymap) {
-    keymap = _keymap;
+    if (_keymap.fd < 0 || _keymap.size == 0)
+        return;
+    const int fd = dup(_keymap.fd);
+    if (fd < 0)
+        return;
+    const void* map = mmap(nullptr, _keymap.size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map == MAP_FAILED) {
+        close(fd);
+        return;
+    }
+    // Own the FD: PortalManager can replace/close its copy on keymap updates.
+    const std::string text(static_cast<const char*>(map), _keymap.size);
+    releaseVirtualKeys();
+    const bool valid = keyboardState.setKeymap(text.c_str());
+    munmap(const_cast<void*>(map), _keymap.size);
+    if (!valid) {
+        close(fd);
+        Debug::log(ERR, "Failed to compile compositor keyboard map");
+        return;
+    }
+    if (keymap.fd >= 0)
+        close(keymap.fd);
+    keymap = {.fd = fd, .size = _keymap.size};
+}
+
+void EmulatedInputServer::sendVirtualModifiers() {
+    if (!virtualKeyboard)
+        return;
+    virtualKeyboard->sendModifiers(
+        keyboardState.modifiers(XKB_STATE_MODS_DEPRESSED),
+        keyboardState.modifiers(XKB_STATE_MODS_LATCHED),
+        keyboardState.modifiers(XKB_STATE_MODS_LOCKED), keyboardState.group());
+}
+
+void EmulatedInputServer::releaseVirtualKeys() {
+    for (const auto key : keyboardState.releaseAll()) {
+        if (virtualKeyboard)
+            virtualKeyboard->sendKey(1, key, false);
+    }
+    sendVirtualModifiers();
 }
 
 void EmulatedInputServer::resetPointer() {
@@ -415,6 +431,11 @@ void EmulatedInputServer::sendPointerFrame() {
 }
 
 void EmulatedInputServer::stopServer() {
+    releaseVirtualKeys();
+    if (keymap.fd >= 0) {
+        close(keymap.fd);
+        keymap.fd = -1;
+    }
     g_pPortalManager->removeFdFromEventLoop(eis_get_fd(eisCtx));
     Debug::log(LOG, "[EIS] Server fd {} destroyed", eis_get_fd(eisCtx));
     eis_unref(eisCtx);

@@ -59,6 +59,7 @@ pkg_check_modules(
   REQUIRED
   IMPORTED_TARGET
   libeis-1.0
+  xkbcommon
   wayland-client
   wayland-protocols>=1.39
   libpipewire-0.3>=1.1.82
