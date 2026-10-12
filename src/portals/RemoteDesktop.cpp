@@ -2,6 +2,7 @@
 #include "../core/PortalManager.hpp"
 #include "../helpers/Log.hpp"
 #include "../helpers/MiscFunctions.hpp"
+#include <sys/mman.h>
 
 void CRemoteDesktopPortal::registerPointer(SP<CCZwlrVirtualPointerManagerV1> mgr) {
     m_sState.pointerMgr = mgr;
@@ -92,6 +93,10 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
     PSESSION->session->onDestroy = [PSESSION, this]() {
         if (g_pPortalManager->m_sPortals.screencopy)
             g_pPortalManager->m_sPortals.screencopy->removeRemoteDesktopSession(PSESSION->sessionHandle);
+        // nothing stays held down once the session is gone
+        for (const auto KEY : PSESSION->keyboardState.releaseAll())
+            PSESSION->keyboard->sendKey(monotonicMs(), KEY, 0);
+        sendModifiers(*PSESSION);
         PSESSION->eis->stopServer();
         PSESSION->eis.reset();
         Debug::log(LOG, "[remotedesktop] Session {} destroyed", PSESSION->sessionHandle.c_str());
@@ -108,6 +113,14 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
 
     const auto& keymap = g_pPortalManager->m_sKeymap;
     PSESSION->keyboard->sendKeymap(keymap.format, keymap.fd, keymap.size);
+    if (keymap.fd >= 0 && keymap.size > 0) {
+        if (const auto MAP = mmap(nullptr, keymap.size, PROT_READ, MAP_PRIVATE, keymap.fd, 0); MAP != MAP_FAILED) {
+            const std::string TEXT(static_cast<const char*>(MAP), keymap.size);
+            munmap(MAP, keymap.size);
+            if (!PSESSION->keyboardState.setKeymap(TEXT.c_str()))
+                Debug::log(ERR, "[remotedesktop] Failed to compile the compositor's keymap");
+        }
+    }
 
     PSESSION->eis                = std::make_unique<EmulatedInputServer>("eisr-" + std::to_string(m_uSessionCounter++));
     PSESSION->eis->setVirtualPointer(PSESSION->pointer);
@@ -170,51 +183,115 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
     return {0, results};
 }
 
+std::shared_ptr<CRemoteDesktopPortal::SSession> CRemoteDesktopPortal::getSession(const sdbus::ObjectPath& handle) {
+    const auto IT = m_mSessions.find(handle);
+    if (IT == m_mSessions.end()) {
+        Debug::log(ERR, "[remotedesktop] No session {}", handle.c_str());
+        return nullptr;
+    }
+    return IT->second;
+}
+
+void CRemoteDesktopPortal::sendModifiers(SSession& session) {
+    const auto& STATE = session.keyboardState;
+    session.keyboard->sendModifiers(STATE.modifiers(XKB_STATE_MODS_DEPRESSED), STATE.modifiers(XKB_STATE_MODS_LATCHED), STATE.modifiers(XKB_STATE_MODS_LOCKED),
+                                    STATE.group());
+}
+
 dbUasv CRemoteDesktopPortal::onNotifyPointerMotion(sdbus::ObjectPath sessionHandle, double dx, double dy, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto PSESSION = m_mSessions[sessionHandle];
-    PSESSION->pointer->sendMotion(0, dx, dy);
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION)
+        return {2, {}};
+    PSESSION->pointer->sendMotion(monotonicMs(), wl_fixed_from_double(dx), wl_fixed_from_double(dy));
+    PSESSION->pointer->sendFrame();
     return {0, {}};
 }
 
 dbUasv CRemoteDesktopPortal::onNotifyPointerMotionAbsolute(sdbus::ObjectPath sessionHandle, unsigned int stream, double x, double y, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto PSESSION = m_mSessions[sessionHandle];
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION)
+        return {2, {}};
     // positions are in the stream's coordinates, which the output's pointer maps onto the output
-    if (PSESSION && PSESSION->outputPointer && stream == PSESSION->streamNode && PSESSION->streamWidth > 0 && PSESSION->streamHeight > 0) {
-        PSESSION->outputPointer->sendMotionAbsolute(0, x, y, PSESSION->streamWidth, PSESSION->streamHeight);
-        PSESSION->outputPointer->sendFrame();
-        return {0, {}};
+    if (!PSESSION->outputPointer || stream != PSESSION->streamNode || PSESSION->streamWidth == 0 || PSESSION->streamHeight == 0) {
+        Debug::log(ERR, "[remotedesktop] Absolute motion on a stream the session doesn't share");
+        return {2, {}};
     }
-    PSESSION->pointer->sendMotionAbsolute(0, x, y, 1920, 1080);
+    PSESSION->outputPointer->sendMotionAbsolute(monotonicMs(), x, y, PSESSION->streamWidth, PSESSION->streamHeight);
+    PSESSION->outputPointer->sendFrame();
     return {0, {}};
 }
 
 dbUasv CRemoteDesktopPortal::onNotifyPointerButton(sdbus::ObjectPath sessionHandle, int button, unsigned int state, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto PSESSION = m_mSessions[sessionHandle];
-    PSESSION->pointer->sendButton(0, button, state);
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION)
+        return {2, {}};
+    PSESSION->pointer->sendButton(monotonicMs(), button, state);
+    PSESSION->pointer->sendFrame();
     return {0, {}};
 }
 
 dbUasv CRemoteDesktopPortal::onNotifyPointerAxis(sdbus::ObjectPath sessionHandle, double dx, double dy, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto PSESSION = m_mSessions[sessionHandle];
-    PSESSION->pointer->sendAxis(0, 0, dy);
-    PSESSION->pointer->sendAxis(0, 1, dx);
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION)
+        return {2, {}};
+    // smooth scrolling, as from a touchpad, in the same units as pointer motion
+    const auto TIME   = monotonicMs();
+    const auto FINISH = opts.contains("finish") && opts["finish"].get<bool>();
+    PSESSION->pointer->sendAxisSource(WL_POINTER_AXIS_SOURCE_FINGER);
+    if (dy != 0)
+        PSESSION->pointer->sendAxis(TIME, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_double(dy));
+    if (dx != 0)
+        PSESSION->pointer->sendAxis(TIME, WL_POINTER_AXIS_HORIZONTAL_SCROLL, wl_fixed_from_double(dx));
+    if (FINISH) {
+        PSESSION->pointer->sendAxisStop(TIME, WL_POINTER_AXIS_VERTICAL_SCROLL);
+        PSESSION->pointer->sendAxisStop(TIME, WL_POINTER_AXIS_HORIZONTAL_SCROLL);
+    }
+    PSESSION->pointer->sendFrame();
     return {0, {}};
 }
 
 dbUasv CRemoteDesktopPortal::onNotifyPointerAxisDiscrete(sdbus::ObjectPath sessionHandle, unsigned int axis, int steps, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto PSESSION = m_mSessions[sessionHandle];
-    PSESSION->pointer->sendAxisDiscrete(1, 0, axis, steps);
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION)
+        return {2, {}};
+    if (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL)
+        return {2, {}};
+    // a wheel notch scrolls 15, as libinput has it
+    PSESSION->pointer->sendAxisSource(WL_POINTER_AXIS_SOURCE_WHEEL);
+    PSESSION->pointer->sendAxisDiscrete(monotonicMs(), axis, wl_fixed_from_int(steps * 15), steps);
+    PSESSION->pointer->sendFrame();
     return {0, {}};
 }
 
 dbUasv CRemoteDesktopPortal::onNotifyKeyboardKeycode(sdbus::ObjectPath sessionHandle, int keycode, unsigned int state, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto PSESSION = m_mSessions[sessionHandle];
-    PSESSION->keyboard->sendKey(1, keycode, state);
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION || keycode < 0)
+        return {2, {}};
+    // virtual keyboards take their modifiers from the client, so they're tracked here
+    PSESSION->keyboardState.key(keycode, state != 0);
+    PSESSION->keyboard->sendKey(monotonicMs(), keycode, state);
+    sendModifiers(*PSESSION);
     return {0, {}};
 }
 
 dbUasv CRemoteDesktopPortal::onNotifyKeyboardKeysym(sdbus::ObjectPath sessionHandle, int keysym, unsigned int state, std::unordered_map<std::string, sdbus::Variant> opts) {
-    const auto PSESSION = m_mSessions[sessionHandle];
+    const auto PSESSION = getSession(sessionHandle);
+    if (!PSESSION)
+        return {2, {}};
+    // the key that types the keysym on the compositor's keymap, with its level's
+    // modifiers held for just that key, on top of whatever the client holds
+    const auto KEY = PSESSION->keyboardState.keyFor(keysym);
+    if (!KEY) {
+        Debug::log(WARN, "[remotedesktop] No key types keysym {:#x}", keysym);
+        return {2, {}};
+    }
+    const auto& STATE = PSESSION->keyboardState;
+    if (state != 0 && KEY->mods != 0)
+        PSESSION->keyboard->sendModifiers(STATE.modifiers(XKB_STATE_MODS_DEPRESSED) | KEY->mods, STATE.modifiers(XKB_STATE_MODS_LATCHED),
+                                          STATE.modifiers(XKB_STATE_MODS_LOCKED), STATE.group());
+    PSESSION->keyboard->sendKey(monotonicMs(), KEY->code, state);
+    if (state == 0 || KEY->mods == 0)
+        sendModifiers(*PSESSION);
     return {0, {}};
 }
 

@@ -51,7 +51,18 @@ int main() {
         assert(state.character(KEY_Q) == 'a');
         assert(state.group() == 0);
     }
+    // keysyms map back to the keys that type them, with their level's modifiers
+    auto shift = 1u << xkb_keymap_mod_get_index(map, "Shift");
+    auto a     = state.keyFor(XKB_KEY_a);
+    assert(a && a->code == KEY_Q && a->mods == 0);
+    auto upper = state.keyFor(XKB_KEY_A);
+    assert(upper && upper->code == KEY_Q && upper->mods == shift);
+    auto one = state.keyFor(XKB_KEY_1);
+    assert(one && one->code == KEY_1 && one->mods == shift);
+    auto at = state.keyFor(XKB_KEY_at);
+    assert(at && at->code == KEY_0 && (at->mods & (1u << mod5)));
+    assert(!state.keyFor(XKB_KEY_Greek_alpha));
     xkb_keymap_unref(map);
     xkb_context_unref(context);
-    std::cout << "PASS: French AZERTY, accents, AltGr, both Ctrl keys, duplicate presses, 100 stop/resume cycles\n";
+    std::cout << "PASS: French AZERTY, accents, AltGr, both Ctrl keys, duplicate presses, 100 stop/resume cycles, keysyms to keys\n";
 }

@@ -139,3 +139,9 @@ bool allocateSHMFilePair(size_t size, int* rw_fd_ptr, int* ro_fd_ptr) {
     *ro_fd_ptr = ro_fd;
     return true;
 }
+
+uint32_t monotonicMs() {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
+}

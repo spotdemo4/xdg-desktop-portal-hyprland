@@ -1,8 +1,10 @@
 #pragma once
 
 #include <xkbcommon/xkbcommon.h>
+#include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -52,6 +54,38 @@ class KeyboardState {
 
     uint32_t character(uint32_t code) const {
         return m_state ? xkb_state_key_get_utf32(m_state.get(), code + 8) : 0;
+    }
+
+    struct SKeyForSym {
+        uint32_t       code = 0;
+        xkb_mod_mask_t mods = 0;
+    };
+
+    // The evdev key that types `sym` in the current layout, and the modifiers its level
+    // takes. Keys typed with fewer levels win, so 'a' comes without Shift.
+    std::optional<SKeyForSym> keyFor(xkb_keysym_t sym) const {
+        if (!m_state)
+            return std::nullopt;
+        const auto  KEYMAP = xkb_state_get_keymap(m_state.get());
+        const auto  LAYOUT = group();
+        const auto  MIN = xkb_keymap_min_keycode(KEYMAP), MAX = xkb_keymap_max_keycode(KEYMAP);
+        xkb_level_index_t levels = 1;
+        for (xkb_keycode_t code = MIN; code <= MAX; code++)
+            levels = std::max(levels, xkb_keymap_num_levels_for_key(KEYMAP, code, LAYOUT));
+        for (xkb_level_index_t level = 0; level < levels; level++) {
+            for (xkb_keycode_t code = std::max<xkb_keycode_t>(MIN, 8); code <= MAX; code++) {
+                const xkb_keysym_t* syms  = nullptr;
+                const int           count = xkb_keymap_key_get_syms_by_level(KEYMAP, code, LAYOUT, level, &syms);
+                for (int i = 0; i < count; i++) {
+                    if (syms[i] != sym)
+                        continue;
+                    xkb_mod_mask_t masks[4] = {};
+                    const auto     MASKS    = xkb_keymap_key_get_mods_for_level(KEYMAP, code, LAYOUT, level, masks, 4);
+                    return SKeyForSym{.code = code - 8, .mods = MASKS > 0 ? masks[0] : 0};
+                }
+            }
+        }
+        return std::nullopt;
     }
 
   private:
