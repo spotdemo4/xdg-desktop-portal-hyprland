@@ -110,6 +110,7 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
     PSESSION->eis                = std::make_unique<EmulatedInputServer>("eisr-" + std::to_string(m_uSessionCounter++));
     PSESSION->eis->setVirtualPointer(PSESSION->pointer);
     PSESSION->eis->setVirtualKeyboard(PSESSION->keyboard);
+    PSESSION->eis->setKeymap({.fd = keymap.fd, .size = keymap.size});
 
     m_mSessions.emplace(sessionHandle, PSESSION);
     
