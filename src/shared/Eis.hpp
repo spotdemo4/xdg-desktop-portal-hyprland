@@ -70,5 +70,11 @@ class EmulatedInputServer {
     void   clearPointer();
     void   clearKeyboard();
     void   sendVirtualModifiers();
+
+    struct SLayoutBox {
+        double x = 0, y = 0, width = 1, height = 1;
+    };
+    // the box around every output, which absolute pointer motion spans
+    static SLayoutBox layoutBox();
     void   releaseVirtualKeys();
 };

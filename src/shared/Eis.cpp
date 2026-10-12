@@ -2,6 +2,7 @@
 #include "../core/PortalManager.hpp"
 #include "../helpers/MiscFunctions.hpp"
 #include "src/helpers/Log.hpp"
+#include <algorithm>
 #include <alloca.h>
 #include <cmath>
 #include <libeis.h>
@@ -133,7 +134,7 @@ int EmulatedInputServer::onEvent(eis_event* e) {
                 const uint32_t keycode = eis_event_keyboard_get_key(e);
                 const bool pressed = eis_event_keyboard_get_key_is_press(e);
                 keyboardState.key(keycode, pressed);
-                virtualKeyboard->sendKey(1, keycode, pressed);
+                virtualKeyboard->sendKey(monotonicMs(), keycode, pressed);
                 sendVirtualModifiers();
             }
             break;
@@ -143,43 +144,54 @@ int EmulatedInputServer::onEvent(eis_event* e) {
             break;
         case EIS_EVENT_POINTER_MOTION:
             if (!virtualPointer) break;
-            virtualPointer->sendMotion(0, eis_event_pointer_get_dx(e), eis_event_pointer_get_dy(e));
+            virtualPointer->sendMotion(monotonicMs(), wl_fixed_from_double(eis_event_pointer_get_dx(e)), wl_fixed_from_double(eis_event_pointer_get_dy(e)));
             break;
         case EIS_EVENT_POINTER_MOTION_ABSOLUTE:
             if (!virtualPointer) break;
             {
-                int x = eis_event_pointer_get_absolute_x(e);
-                int y = eis_event_pointer_get_absolute_y(e);
-                device = eis_event_get_device(e);
-                eis_region* region = eis_device_get_region_at(device, x, y);
-                virtualPointer->sendMotionAbsolute(0, x, y, eis_region_get_width(region), eis_region_get_height(region));
+                // positions are in the layout's logical coordinates, which a pointer bound
+                // to no output spans
+                const auto LAYOUT = layoutBox();
+                const auto X      = std::clamp(eis_event_pointer_get_absolute_x(e) - LAYOUT.x, 0.0, LAYOUT.width - 1.0);
+                const auto Y      = std::clamp(eis_event_pointer_get_absolute_y(e) - LAYOUT.y, 0.0, LAYOUT.height - 1.0);
+                virtualPointer->sendMotionAbsolute(monotonicMs(), static_cast<uint32_t>(X), static_cast<uint32_t>(Y), static_cast<uint32_t>(LAYOUT.width),
+                                                   static_cast<uint32_t>(LAYOUT.height));
             }
             break;
         case EIS_EVENT_BUTTON_BUTTON:
             if (!virtualPointer) break;
-            virtualPointer->sendButton(0, eis_event_button_get_button(e), eis_event_button_get_is_press(e));
+            virtualPointer->sendButton(monotonicMs(), eis_event_button_get_button(e), eis_event_button_get_is_press(e));
             break;
         case EIS_EVENT_SCROLL_DELTA:
             if (!virtualPointer) break;
-            virtualPointer->sendAxis(0, 0, wl_fixed_from_double(eis_event_scroll_get_dy(e)));
-            virtualPointer->sendAxis(0, 1, wl_fixed_from_double(eis_event_scroll_get_dx(e)));
+            virtualPointer->sendAxisSource(WL_POINTER_AXIS_SOURCE_FINGER);
+            virtualPointer->sendAxis(monotonicMs(), WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_double(eis_event_scroll_get_dy(e)));
+            virtualPointer->sendAxis(monotonicMs(), WL_POINTER_AXIS_HORIZONTAL_SCROLL, wl_fixed_from_double(eis_event_scroll_get_dx(e)));
             break;
         case EIS_EVENT_SCROLL_STOP:
             if (!virtualPointer) break;
             if (eis_event_scroll_get_stop_x(e))
-                virtualPointer->sendAxisStop(0, 1);
+                virtualPointer->sendAxisStop(monotonicMs(), WL_POINTER_AXIS_HORIZONTAL_SCROLL);
             if (eis_event_scroll_get_stop_y(e))
-                virtualPointer->sendAxisStop(0, 0);
+                virtualPointer->sendAxisStop(monotonicMs(), WL_POINTER_AXIS_VERTICAL_SCROLL);
             break;
         case EIS_EVENT_SCROLL_DISCRETE:
             if (!virtualPointer) break;
             {
-                int32_t dx = eis_event_scroll_get_discrete_dx(e);
-                int32_t dy = eis_event_scroll_get_discrete_dy(e);
-                if (dx != 0)
-                    virtualPointer->sendAxisDiscrete(0, 1, wl_fixed_from_int(dx), dx > 0 ? 1 : -1);
-                if (dy != 0)
-                    virtualPointer->sendAxisDiscrete(1, 0, wl_fixed_from_int(dy), dy > 0 ? 1 : -1);
+                // EI counts 120 to a wheel notch, which scrolls 15 as libinput has it;
+                // partial notches from high-resolution wheels scroll without a step
+                const auto scroll = [this](uint32_t axis, int32_t discrete) {
+                    if (discrete == 0)
+                        return;
+                    const auto VALUE = wl_fixed_from_double(discrete * 15.0 / 120.0);
+                    virtualPointer->sendAxisSource(WL_POINTER_AXIS_SOURCE_WHEEL);
+                    if (discrete / 120 != 0)
+                        virtualPointer->sendAxisDiscrete(monotonicMs(), axis, VALUE, discrete / 120);
+                    else
+                        virtualPointer->sendAxis(monotonicMs(), axis, VALUE);
+                };
+                scroll(WL_POINTER_AXIS_HORIZONTAL_SCROLL, eis_event_scroll_get_discrete_dx(e));
+                scroll(WL_POINTER_AXIS_VERTICAL_SCROLL, eis_event_scroll_get_discrete_dy(e));
             }
             break;
         default:
@@ -187,6 +199,25 @@ int EmulatedInputServer::onEvent(eis_event* e) {
     }
 
     return 0;
+}
+
+EmulatedInputServer::SLayoutBox EmulatedInputServer::layoutBox() {
+    // the outputs' logical rectangles, as the pointer's regions have them
+    double left = 0, top = 0, right = 1, bottom = 1;
+    bool   first = true;
+    for (auto& o : g_pPortalManager->getAllOutputs()) {
+        const auto scale  = o->scale > 0.0 ? o->scale : 1.0;
+        const auto x      = o->logicalPositionValid ? o->logicalX : o->x;
+        const auto y      = o->logicalPositionValid ? o->logicalY : o->y;
+        const auto width  = o->logicalSizeValid ? o->logicalWidth : std::max(1, static_cast<int32_t>(std::lround(o->width / scale)));
+        const auto height = o->logicalSizeValid ? o->logicalHeight : std::max(1, static_cast<int32_t>(std::lround(o->height / scale)));
+        left              = first ? x : std::min<double>(left, x);
+        top               = first ? y : std::min<double>(top, y);
+        right             = first ? x + width : std::max<double>(right, x + width);
+        bottom            = first ? y + height : std::max<double>(bottom, y + height);
+        first             = false;
+    }
+    return {.x = left, .y = top, .width = right - left, .height = bottom - top};
 }
 
 void EmulatedInputServer::ensurePointer() {
@@ -367,7 +398,7 @@ void EmulatedInputServer::sendVirtualModifiers() {
 void EmulatedInputServer::releaseVirtualKeys() {
     for (const auto key : keyboardState.releaseAll()) {
         if (virtualKeyboard)
-            virtualKeyboard->sendKey(1, key, false);
+            virtualKeyboard->sendKey(monotonicMs(), key, false);
     }
     sendVirtualModifiers();
 }
