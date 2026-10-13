@@ -157,6 +157,7 @@ protocolnew("staging/ext-foreign-toplevel-list" "ext-foreign-toplevel-list-v1" f
 protocolnew("staging/ext-image-copy-capture" "ext-image-copy-capture-v1" false)
 protocolnew("staging/ext-image-capture-source" "ext-image-capture-source-v1" false)
 protocolnew("staging/ext-workspace" "ext-workspace-v1" false)
+protocolnew("staging/ext-data-control" "ext-data-control-v1" false)
 
 # tests
 if(BUILD_TESTING)
@@ -169,6 +170,7 @@ if(BUILD_TESTING)
   endfunction()
 
   unittest(keyboard-state)
+  unittest(clipboard-transfers src/shared/ClipboardTransfers.cpp)
 endif()
 
 # Installation
