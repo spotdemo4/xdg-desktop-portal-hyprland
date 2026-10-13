@@ -611,6 +611,8 @@ void CPortalManager::releaseWayland() {
     m_sWaylandConnection.hyprlandToplevelMgr.reset();
     m_sWaylandConnection.xdgOutputManager.reset();
     m_sWaylandConnection.shm.reset();
+    m_sWaylandConnection.keyboard.reset();
+    m_sWaylandConnection.seat.reset();
     m_sWaylandConnection.registry.reset();
 
     if (!m_sWaylandConnection.display)
