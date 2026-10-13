@@ -158,6 +158,19 @@ protocolnew("staging/ext-image-copy-capture" "ext-image-copy-capture-v1" false)
 protocolnew("staging/ext-image-capture-source" "ext-image-capture-source-v1" false)
 protocolnew("staging/ext-workspace" "ext-workspace-v1" false)
 
+# tests
+if(BUILD_TESTING)
+  function(unittest name)
+    add_executable(test-${name} tests/${name}.cpp ${ARGN})
+    target_link_libraries(test-${name} PRIVATE PkgConfig::deps)
+    # the tests are asserts, which release builds would compile out
+    target_compile_options(test-${name} PRIVATE -UNDEBUG)
+    add_test(NAME ${name} COMMAND test-${name})
+  endfunction()
+
+  unittest(keyboard-state)
+endif()
+
 # Installation
 install(TARGETS xdg-desktop-portal-hyprland
         DESTINATION ${CMAKE_INSTALL_LIBEXECDIR})
