@@ -93,6 +93,8 @@ dbUasv CRemoteDesktopPortal::onCreateSession(sdbus::ObjectPath requestHandle, sd
     PSESSION->session->onDestroy = [PSESSION, this]() {
         if (g_pPortalManager->m_sPortals.screencopy)
             g_pPortalManager->m_sPortals.screencopy->removeRemoteDesktopSession(PSESSION->sessionHandle);
+        if (g_pPortalManager->m_sPortals.clipboard)
+            g_pPortalManager->m_sPortals.clipboard->removeSession(PSESSION->sessionHandle);
         // nothing stays held down once the session is gone
         for (const auto KEY : PSESSION->keyboardState.releaseAll())
             PSESSION->keyboard->sendKey(monotonicMs(), KEY, 0);
@@ -172,7 +174,9 @@ dbUasv CRemoteDesktopPortal::onStart(sdbus::ObjectPath requestHandle, sdbus::Obj
     }
 
     results["devices"]           = sdbus::Variant{uint32_t{1 | 2}};
-    results["clipboard_enabled"] = sdbus::Variant{bool(true)};
+    // the clipboard, when it was requested with this session
+    const auto& CLIPBOARD        = g_pPortalManager->m_sPortals.clipboard;
+    results["clipboard_enabled"] = sdbus::Variant{CLIPBOARD && CLIPBOARD->enableSession(sessionHandle)};
 
     if (!results.contains("restore_data")) {
         std::unordered_map<std::string, sdbus::Variant> restoreData;

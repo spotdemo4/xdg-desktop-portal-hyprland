@@ -10,6 +10,7 @@
 #include "../portals/GlobalShortcuts.hpp"
 #include "../portals/InputCapture.hpp"
 #include "../portals/RemoteDesktop.hpp"
+#include "../portals/Clipboard.hpp"
 #include "../helpers/Timer.hpp"
 #include "../shared/ToplevelManager.hpp"
 #include "../shared/ToplevelMappingManager.hpp"
@@ -34,6 +35,7 @@ struct pw_loop;
 
 class CCZxdgOutputManagerV1;
 class CCZxdgOutputV1;
+class CCExtDataControlManagerV1;
 
 struct SOutput {
     SOutput(SP<CCWlOutput>);
@@ -90,6 +92,7 @@ class CPortalManager {
         std::unique_ptr<CGlobalShortcutsPortal> globalShortcuts;
         std::unique_ptr<CInputCapturePortal>    inputCapture;
         std::unique_ptr<CRemoteDesktopPortal>   remoteDesktop;
+        std::unique_ptr<CClipboardPortal>       clipboard;
     } m_sPortals;
 
     struct {
@@ -106,6 +109,7 @@ class CPortalManager {
         SP<CCZwpLinuxDmabufV1>                linuxDmabuf;
         SP<CCZwpLinuxDmabufFeedbackV1>        linuxDmabufFeedback;
         SP<CCZxdgOutputManagerV1>             xdgOutputManager;
+        SP<CCExtDataControlManagerV1>         dataControlMgr;
         SP<CCWlShm>                           shm;
         gbm_bo*                               gbm       = nullptr;
         gbm_device*                           gbmDevice = nullptr;

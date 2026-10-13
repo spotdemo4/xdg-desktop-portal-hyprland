@@ -1,5 +1,5 @@
 wayland_protos = dependency('wayland-protocols',
-	version: '>=1.31',
+	version: '>=1.39',
 	default_options: ['tests=false'],
 )
 
@@ -29,6 +29,7 @@ client_protocols = [
 	wl_protocol_dir / 'stable/linux-dmabuf/linux-dmabuf-v1.xml',
 	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
 	wl_protocol_dir / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
+	wl_protocol_dir / 'staging/ext-data-control/ext-data-control-v1.xml',
 ]
 
 wl_proto_files = []

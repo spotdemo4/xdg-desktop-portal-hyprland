@@ -2,6 +2,7 @@
 #include "../helpers/Log.hpp"
 #include "../helpers/MiscFunctions.hpp"
 #include "xdg-output-unstable-v1.hpp"
+#include "ext-data-control-v1.hpp"
 
 #include <pipewire/pipewire.h>
 #include <sys/mman.h>
@@ -118,6 +119,10 @@ void CPortalManager::onGlobal(uint32_t name, const char* interface, uint32_t ver
     if (INTERFACE == zwp_virtual_keyboard_manager_v1_interface.name)
         m_sPortals.remoteDesktop->registerKeyboard(makeShared<CCZwpVirtualKeyboardManagerV1>(
             (wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &zwp_virtual_keyboard_manager_v1_interface, version)));
+
+    if (INTERFACE == ext_data_control_manager_v1_interface.name)
+        m_sWaylandConnection.dataControlMgr = makeShared<CCExtDataControlManagerV1>(
+            (wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &ext_data_control_manager_v1_interface, 1));
 
     else if (INTERFACE == hyprland_toplevel_export_manager_v1_interface.name) {
         m_sWaylandConnection.hyprlandToplevelMgr = makeShared<CCHyprlandToplevelExportManagerV1>(
@@ -360,6 +365,11 @@ void CPortalManager::init() {
     else if (m_sWaylandConnection.hyprlandToplevelMgr)
         m_sPortals.screencopy->appendToplevelExport(m_sWaylandConnection.hyprlandToplevelMgr);
 
+    if (m_sWaylandConnection.dataControlMgr && m_sWaylandConnection.seat)
+        m_sPortals.clipboard = std::make_unique<CClipboardPortal>(m_sWaylandConnection.dataControlMgr);
+    else
+        Debug::log(WARN, "Clipboard not started: compositor doesn't support ext_data_control_v1");
+
     if (!inShellPath("grim"))
         Debug::log(WARN, "grim not found. Screenshots will not work.");
     else {
@@ -528,6 +538,7 @@ void CPortalManager::startEventLoop() {
     m_sHelpers.toplevel.reset();
     m_sHelpers.toplevelMapping.reset();
     m_sPortals.inputCapture.reset();
+    m_sPortals.clipboard.reset();
     m_sPortals.remoteDesktop.reset();
 
     m_pConnection.reset();
@@ -624,6 +635,7 @@ void CPortalManager::releaseWayland() {
     m_sWaylandConnection.hyprlandToplevelMgr.reset();
     m_sWaylandConnection.xdgOutputManager.reset();
     m_sWaylandConnection.shm.reset();
+    m_sWaylandConnection.dataControlMgr.reset();
     m_sWaylandConnection.keyboard.reset();
     m_sWaylandConnection.seat.reset();
     m_sWaylandConnection.registry.reset();

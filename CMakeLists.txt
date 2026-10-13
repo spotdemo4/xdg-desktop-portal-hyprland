@@ -62,7 +62,7 @@ pkg_check_modules(
   libeis-1.0
   xkbcommon
   wayland-client
-  wayland-protocols
+  wayland-protocols>=1.39
   libpipewire-0.3>=1.1.82
   libspa-0.2
   libdrm
@@ -144,6 +144,7 @@ protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-input-capture-v1"
 protocolnew("stable/linux-dmabuf" "linux-dmabuf-v1" false)
 protocolnew("unstable/xdg-output" "xdg-output-unstable-v1" false)
 protocolnew("staging/ext-foreign-toplevel-list" "ext-foreign-toplevel-list-v1" false)
+protocolnew("staging/ext-data-control" "ext-data-control-v1" false)
 
 # tests
 if(BUILD_TESTING)
@@ -156,6 +157,7 @@ if(BUILD_TESTING)
   endfunction()
 
   unittest(keyboard-state)
+  unittest(clipboard-transfers src/shared/ClipboardTransfers.cpp)
 endif()
 
 # Installation
